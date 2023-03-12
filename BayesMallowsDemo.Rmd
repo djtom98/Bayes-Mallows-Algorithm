@@ -1,0 +1,254 @@
+---
+title: "BayesMallows Demo"
+author: "Eric Frey"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+header-includes:
+  \usepackage{fvextra}
+  \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+date: "2023-03-06"
+link-citations: yes
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+# Bayes Mallows Demo: Assessing Rankings of Movie Characters
+
+This R Markdown document explores the BayesMallows R package, which is used for "analyzing data in the form of rankings or preferences with the Mallows rank model, in a Bayesian probabilistic framework." [@S_rensen_2020]
+
+To explore how this package works, we generate assessor rankings from true consensus ranking of movie characters.
+
+We can generate a single assessor ranking from this true consensus ranking by sampling from a multinomial distribution without replacement until all items have been sampled. The ordered probabilities of this multinomial distribution represents the true consensus ranking.
+
+Given a list of probabilities, where each element represents the probability of selecting that item:\
+1. Initialize an empty list that will become an assessor's ranking.\
+2. Sample 1 item from the list of probabilities as though it were a multinomial probability distribution.\
+3. Add this item to the assessor ranking list.\
+4. Set this item's probability of being selected to zero.\
+5. Repeat 2-4, normalizing the remainder of the probability list until all items have been sampled.\
+
+# Load Libraries and Declare Functions
+
+```{r}
+# We load the required libraries for this analysis, including ggplot2, reshape2, and BayesMallows.
+library(ggplot2) 
+suppressMessages(library(dplyr))
+library(reshape2) 
+library(BayesMallows)
+
+#we define two functions: normalize and generate_assessor_ranking. normalize normalizes a list of numbers by dividing each element by the sum of the list. generate_assessor_ranking generates an assessor ranking based on given probabilities (the true consensus ranking), sampling from this multinomial distribution.
+
+# Function to normalize a list
+
+normalize <- function(list1) { return(list1 / sum(list1)) }
+
+# Function to generate an assessor ranking based on given probabilities
+
+generate_assessor_ranking <- function(prob) {
+  assessor_prob <- c()
+  for (i in 1:length(prob)) {
+    value <- which(rmultinom(1, 1, normalize(prob)) == 1)
+    assessor_prob <- c(assessor_prob, value)
+    prob[value] <- 0
+  }
+  return(assessor_prob)
+}
+```
+
+# Data Generation
+
+Here we specify our true consensus ranking, and generate assessors' rankings on the basis of this true consensus over a set of 8 film characters. To generate a single observation consisting of an assessor's ranked items, we sample from a multinomial distribution without replacement until all items have been sampled. The order of the ordered probabilities of this multinomial distribution represent the true consensus ranking. We repeat this sampling process for 50 assessors, thereby generating synthetic data based on a true consensus ranking.
+
+```{r}
+# Define Item Names and Rho
+names = c("Frankenstein","Wednesday Addams", "The Grudge", "Noseferatu", "Freddy Krueger", "Dracula", "Dr. Frank N. Furter", "Pennywise") 
+probs = c(0.24169184, 0.21148036, 0.18126888, 0.15105740,0.09063444,  0.06042296,0.03323263, 0.03021148)
+
+
+n_samples <- 50
+set.seed(42)
+# Generate Assessor Rankings
+assessors = data.frame()
+  for (i in 1:n_samples) {
+    assessors = rbind(assessors, t(generate_assessor_ranking(probs)))
+  }
+
+#rename columns
+names(assessors) <- names
+print(paste('Characters and their average ranking from', n_samples, 'assesors'))
+print(colMeans(assessors))
+```
+
+# Preference Learning with the Mallows Rank Model
+
+We use the Mallows Rank Model to analyze the assessors rankings. We compute the Mallows model with the compute_mallows function, specifying the use of the kendall distance, and plot the results with plot. As this package is authored by the same authors of Vitelli, V. (2019), the methods and algorithms used to estimate the posterior distribution are the same- the package utilizes the Metropolis-Hastings MCMC algorithm, and in order to sample from $\rho_m$ the Leap-Shift approach is implemented.
+
+```{r}
+# Preference Learning with the Mallows Rank Model
+fit <- compute_mallows(assessors, metric="kendall")
+
+
+```
+
+Below is the pseudo code for this algorithm [@https://doi.org/10.48550/arxiv.1405.7945]:
+
+```{r, echo=FALSE}
+knitr::include_graphics('MCMC bayes mallows.png')
+```
+
+Where:
+
+-   Lambda $\lambda$ is the rate of the exponetial prior. By default this set to .001
+
+-   $\sigma_\alpha$ is the standard deviation of the lognormal proposal distribution used for $\alpha$. By default this set to .1.
+
+-   $\alpha_{jump}$ refers to how many times to sample $\rho$ between each sampling of $\alpha$. By default this is set to an integer of 1.
+
+-   $L$ is the step size of leap-and-shift proposal for $\rho$.
+
+-   $d$ is the right-invariant distance among rankings. We specify the Kendall distance.
+
+-   $Z_n(\alpha)$ is the normalizing constant. This is by default set to Null and gets computed during over iterations of the algorithm.
+
+-   $M$ is an integer specifying the number of iterations of the Metropolis-Hastings algorithm to run. By default this is set to an integer of 2000. $m$ is the current iteration.
+
+-   equation (6) refers to the ratio between the posterior distributions of $\rho\prime$ and $\rho_{m-1}$ given the data, as per the Metropolis Hastings MCMC algorithm.
+
+-   equation (8) refers to the ratio between the posterior distributions of $\alpha\prime$ and $\alpha_{m-1}$ given the data, as per the Metropolis Hastings MCMC algorithm.
+
+# Assess Convergence
+
+```{r}
+assess_convergence(fit)
+```
+
+We use the $\verb|assess_convergence|$ function to plot the value of $\alpha$ over the 2000 iterations. We can see that $\alpha$ converges to a fixed region around 3.75 after about 100 iterations. Based on the shape of Figure 1, when plotting the probability distribution of $\rho$ we set the burn-in value to 100, which means that we remove the first 100 observations of $\rho$ in the plot.
+
+# Plot Estimated Rho
+
+We use the parameter = "rho" argument to plot the values of $\rho$, the dispersion parameter, and the items = 1:length(names) argument to plot the values of $\rho$ for each movie monster.
+
+```{r}
+#specify burnin
+fit$burnin=100
+rho_data <- plot(fit, parameter = "rho",items = 1:length(names))
+
+# Create a data.frame with all possible combinations of letter and number
+full_df <- expand.grid(item = levels(rho_data$data$item), value = unique(rho_data$data$value))
+
+# Merge the two data.frames, setting missing values to 0
+merged_df <- merge(full_df, rho_data$data[c("item", "value", "pct")], all.x = TRUE)
+merged_df$pct[is.na(merged_df$pct)] <- 0
+names(merged_df) <- c("item", "rank", "pct")
+
+# Melt the data into long format
+melted_df <- melt(merged_df, id.vars = c("item", "rank"))
+
+rho_data
+
+# Create a Heatmap
+ggplot(melted_df, aes(item, rank, fill= value)) + 
+  geom_tile(color = "black") + 
+  geom_text(aes(label = round(value, 2)), color = "white", size = 4) + 
+  coord_fixed() + 
+  scale_x_discrete(labels = c(names)) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.8)) +
+  labs(fill="Posterior Probability")
+
+# Comparison of true consensus ranking with estimated
+  compute_consensus(fit, type = "CP") %>%
+    mutate(True_Consensus = names) %>%
+    rename(Estimated_Consensus = item)
+```
+
+The posterior probability of $\rho$ given the assessor data is plotted by item, and then in the form of a heatmap where the true consensus ranking is displayed on the x-axis. Most of the items' highest probabilities are at their true ranking, while a few have their highest probability at a ranking other than the true one.
+
+```{r}
+# additional functions within Bayes Mallows package to display confidence intervals of true rank:
+  # compute the confidence interval for the rankings of all the items
+  compute_posterior_intervals(fit, parameter = "rho") %>% 
+    select(-hpdi)
+    
+
+  # compute confidence intervals for alpha
+  compute_posterior_intervals(fit, parameter = "alpha")
+```
+
+Here we display confidence intervals for both $\alpha$ and the rank of each item within a 95% degree of confidence.
+
+# Comparison between Distance Metrics
+
+```{r}
+true = c("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8")
+n_samples <- c(10, 30, 50, 70, 100)
+d_metrics = c("footrule", "spearman", "cayley", "hamming", "kendall", "ulam")
+
+# Create an empty data frame to store the results
+results <- data.frame(n_samples = numeric(),
+                      d_metric = character(),
+                      log_likelihood = numeric(),
+                      model_selection_score = numeric(),
+                      computation_time = numeric())
+
+# Loop over the sample sizes and distance metrics
+for (n in n_samples) {
+  for (seed in 1:20){
+    
+    # Generate Assessor Rankings
+    assessors <- data.frame()
+    
+    set.seed(seed)
+    for (i in 1:n) {
+      assessors <- rbind(assessors, t(generate_assessor_ranking(probs)))
+    }
+      
+    for (metric in d_metrics) {
+      # Fit the Bayes Mallows model
+      start_time <- Sys.time()
+      fit <- compute_mallows(assessors, metric=metric)
+      end_time <- Sys.time()
+      computation_time <- end_time - start_time
+      
+      # Store the results in the data frame
+      results <- rbind(results, data.frame(n_samples = n,
+                                           d_metric = metric,
+                                           model_selection_score = sum(true != compute_consensus(fit, burnin=250)$item),
+                                           computation_time = computation_time))
+    }
+  }
+  print(paste('sample size:', n))
+}
+
+# Visualize the results
+library(ggplot2)
+
+ggplot(results, aes(x = factor(n_samples), y = model_selection_score, fill = d_metric)) +
+  geom_boxplot() +
+  #scale_fill_manual(values = c("gray20", "gray50", "gray70", "gray80", "gray90", "white")) +
+  labs(x = "Sample size (Number of Assessors)", y = "Hamming Distance", fill = "Distance metric") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+```{r fig.show='hide'}
+# Visualize the computation results
+ggplot(results[results$n_samples==500,], aes(x = factor(n_samples), y = as.numeric(computation_time), fill = d_metric)) +
+  geom_boxplot() +
+  labs(x = "Sample size (Number of Assessors)", y = "Computation Time (seconds)", fill = "Distance Metric") +
+  theme_bw()
+```
+
+```{r echo= FALSE}
+knitr::include_graphics('compute_time.png')
+
+```
+
+To compare between distance metrics, we iterate through all possible distances provided by the $\textbf{BayesMallows}$ package, and compute performance across different sample sizes from 10 to 500, 20 times for each sample size and distance metric. Figures 4 and 5 display performance with respect to hamming distance and computational time to fit the model, respectively. We can see that in general footrule, kendall, and spearman distances perform quite well in terms of estimating the true consensus. The ulam and cayle distances perform notably worse in terms of computation time, while the remainder finish in similar times.
+
+# References
